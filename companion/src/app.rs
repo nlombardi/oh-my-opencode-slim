@@ -640,6 +640,8 @@ impl eframe::App for CompanionApp {
                             if rect.contains(release_pos) {
                                 if let Some(task) = session.agent_tasks.get(idx) {
                                     let _ = write_companion_action(&task.session_id);
+                                } else if !session.session_id.is_empty() {
+                                    let _ = write_companion_action(&session.session_id);
                                 }
                                 break;
                             }
