@@ -767,7 +767,8 @@ fn render_session(
                         egui::Stroke::new(1.5_f32, color),
                     );
 
-                    egui::show_tooltip_at_pointer(ctx, egui::Id::new("companion_task_tooltip"), |ui| {
+                    let layer_id = ui.layer_id();
+                    egui::show_tooltip_at_pointer(ctx, layer_id, egui::Id::new("companion_task_tooltip"), |ui: &mut egui::Ui| {
                         ui.set_max_width(220.0);
                         ui.spacing_mut().item_spacing = egui::vec2(0.0, 3.0);
 
