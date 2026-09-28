@@ -459,15 +459,20 @@ export class CompanionManager {
     const tasks: CompanionAgentTask[] = [];
     for (const [sessionId, info] of this.busyTasks.entries()) {
       const rootId = info.parentSessionId || sessionId;
+      const colorIndex = computeSessionColorIndex(rootId);
       tasks.push({
         sessionId,
         parentSessionId: info.parentSessionId,
+        session_id: sessionId,
+        parent_session_id: info.parentSessionId,
         agent: info.agent,
         alias: info.alias,
         title: info.title,
         model: info.model,
         startedAt: info.startedAt,
-        sessionColorIndex: computeSessionColorIndex(rootId),
+        started_at: info.startedAt,
+        sessionColorIndex: colorIndex,
+        session_color_index: colorIndex,
       });
       if (tasks.length >= 9) break;
     }
@@ -476,14 +481,18 @@ export class CompanionManager {
 
     const rootId = this.id;
     const defaultColor = computeSessionColorIndex(rootId);
+    const now = Date.now();
     if (this.status === 'waiting-input') {
       return [
         {
           sessionId: this.id,
+          session_id: this.id,
           agent: 'input',
           title: 'Waiting for user input',
-          startedAt: Date.now(),
+          startedAt: now,
+          started_at: now,
           sessionColorIndex: defaultColor,
+          session_color_index: defaultColor,
         },
       ];
     }
@@ -491,20 +500,26 @@ export class CompanionManager {
       return [
         {
           sessionId: this.id,
+          session_id: this.id,
           agent: 'orchestrator',
           title: 'Orchestrating tasks',
-          startedAt: Date.now(),
+          startedAt: now,
+          started_at: now,
           sessionColorIndex: defaultColor,
+          session_color_index: defaultColor,
         },
       ];
     }
     return [
       {
         sessionId: this.id,
+        session_id: this.id,
         agent: 'intro',
         title: 'Idle',
-        startedAt: Date.now(),
+        startedAt: now,
+        started_at: now,
         sessionColorIndex: defaultColor,
+        session_color_index: defaultColor,
       },
     ];
   }

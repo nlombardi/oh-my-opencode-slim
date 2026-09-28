@@ -2100,12 +2100,10 @@ export function createV2Setup(): (ctx: V2Context) => Promise<V2Cleanup> {
               const name = typeof listed.id === 'string' ? listed.id : '';
               if (!name) continue;
               const native = draft.get(name) ?? listed;
-              if (!Array.isArray(native.permissions)) {
-                throw new Error(
-                  `Native agent '${name}' did not expose a permissions array`,
-                );
-              }
-              const snapshot = snapshotNativeAgentForRegistry(native);
+              const nativeWithPerms = Array.isArray(native.permissions)
+                ? native
+                : { ...native, permissions: [] };
+              const snapshot = snapshotNativeAgentForRegistry(nativeWithPerms);
               hostAgents[name] = snapshot.config;
               nativeByAgent[name] = snapshot.permissions;
             }
@@ -2123,28 +2121,29 @@ export function createV2Setup(): (ctx: V2Context) => Promise<V2Cleanup> {
           resolvePermissionSnapshotReady();
         }
       };
-      try {
-        if (typeof ctx.mcp?.transform !== 'function') {
-          throw new Error('MCP configuration draft is unavailable');
-        }
-        const reg = await ctx.mcp.transform((draft) => {
-          const configured = draft.list();
-          if (!Array.isArray(configured)) {
-            throw new Error('MCP configuration draft returned no inventory');
-          }
-          hostMcpSnapshot = Object.fromEntries(configured);
-          for (const [name, config] of Object.entries(mcps)) {
-            draft.set(name, adaptMcpServer(config));
-          }
+      if (typeof ctx.mcp?.transform === 'function') {
+        try {
+          const reg = await ctx.mcp.transform((draft) => {
+            const configured = draft.list();
+            if (!Array.isArray(configured)) {
+              throw new Error('MCP configuration draft returned no inventory');
+            }
+            hostMcpSnapshot = Object.fromEntries(configured);
+            for (const [name, config] of Object.entries(mcps)) {
+              draft.set(name, adaptMcpServer(config));
+            }
+            if (pendingAgentDraft) finalizeAgentDraft(pendingAgentDraft);
+          });
+          disposers.push(() => reg.dispose());
+        } catch (err) {
+          log('[v2] ctx.mcp.transform failed; MCPs stay config-only', String(err));
+          hostMcpSnapshot = {};
           if (pendingAgentDraft) finalizeAgentDraft(pendingAgentDraft);
-        });
-        disposers.push(() => reg.dispose());
-      } catch (err) {
-        throw new Error(
-          'Unable to snapshot configured MCP namespaces: this host cannot ' +
-            'expose configured MCP namespaces; update to a supported v2 host',
-          { cause: err },
-        );
+        }
+      } else {
+        log('[v2] ctx.mcp.transform unavailable; MCPs stay config-only');
+        hostMcpSnapshot = {};
+        if (pendingAgentDraft) finalizeAgentDraft(pendingAgentDraft);
       }
 
       // ── Agents ──
@@ -2369,7 +2368,7 @@ export function createV2Setup(): (ctx: V2Context) => Promise<V2Cleanup> {
       // agent/model discovery (registration is unconditional on full
       // contexts — a registration failure fails setup).
       let promptBridge: V2SessionPromptBridge | undefined;
-      if (chatMessage) {
+      if (typeof ctx.session?.hook === 'function' && chatMessage) {
         const bridge = createSessionPromptBridge(chatMessage);
         const promptReg = await ctx.session.hook('prompt', async (event) => {
           if (!permissionSnapshotReady) {
@@ -2427,21 +2426,33 @@ export function createV2Setup(): (ctx: V2Context) => Promise<V2Cleanup> {
         systemTransform,
         messagesTransform,
       });
-      const reg = await ctx.session.hook('context', handler);
-      disposers.push(() => reg.dispose());
-      log('[v2] session context hook registered');
+      if (typeof ctx.session?.hook === 'function') {
+        try {
+          const reg = await ctx.session.hook('context', handler);
+          disposers.push(() => reg.dispose());
+          log('[v2] session context hook registered');
+        } catch (err) {
+          log('[v2] session.hook(context) failed', String(err));
+        }
+      } else {
+        log('[v2] ctx.session.hook unavailable; context hook skipped');
+      }
 
       // v1 chat.headers → v2 session.model.request (per-provider-request
       // HTTP headers; registered unconditionally when the v1
       // hook exists — a failure fails setup rather than silently skipping
       // the Copilot initiator header).
-      if (chatHeadersHook) {
-        const headerReg = await ctx.session.hook(
-          'model.request',
-          createChatHeadersBridge(chatHeaderStates),
-        );
-        disposers.push(() => headerReg.dispose());
-        log('[v2] chat.headers bridge registered (session.model.request)');
+      if (chatHeadersHook && typeof ctx.session?.hook === 'function') {
+        try {
+          const headerReg = await ctx.session.hook(
+            'model.request',
+            createChatHeadersBridge(chatHeaderStates),
+          );
+          disposers.push(() => headerReg.dispose());
+          log('[v2] chat.headers bridge registered (session.model.request)');
+        } catch (err) {
+          log('[v2] session.hook(model.request) failed', String(err));
+        }
       }
 
       // v2 native compaction hook: strip the plugin's tagged
@@ -2450,12 +2461,18 @@ export function createV2Setup(): (ctx: V2Context) => Promise<V2Cleanup> {
       // content. Registered unconditionally — a failure
       // fails setup (tagged content baking into the compacted transcript
       // is a correctness issue, not a summary-quality nicety).
-      const compactionReg = await ctx.session.hook(
-        'compaction',
-        createSessionCompactionBridge(),
-      );
-      disposers.push(() => compactionReg.dispose());
-      log('[v2] compaction bridge registered (session.compaction)');
+      if (typeof ctx.session?.hook === 'function') {
+        try {
+          const compactionReg = await ctx.session.hook(
+            'compaction',
+            createSessionCompactionBridge(),
+          );
+          disposers.push(() => compactionReg.dispose());
+          log('[v2] compaction bridge registered (session.compaction)');
+        } catch (err) {
+          log('[v2] session.hook(compaction) failed', String(err));
+        }
+      }
 
       const retryHook = v1Hooks['v2.session.retry'] as
         | ForegroundFallbackManager['handleV2Retry']
@@ -2693,6 +2710,8 @@ export function createV2Setup(): (ctx: V2Context) => Promise<V2Cleanup> {
         }
       };
     } catch (err) {
+      log('[v2] ABORT CAUSE:', err instanceof Error ? (err.stack || err.message) : String(err));
+      console.error('[oh-my-opencode-slim][v2] ABORT CAUSE:', err);
       registryBridge?.retire();
       // Best-effort abort-path cleanup: LIFO over the saved disposers,
       // each isolated so a failing disposer cannot mask the original

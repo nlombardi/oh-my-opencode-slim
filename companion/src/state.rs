@@ -50,8 +50,9 @@ pub struct WindowPositionState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompanionAgentTask {
+    #[serde(alias = "sessionId")]
     pub session_id: String,
-    #[serde(default)]
+    #[serde(default, alias = "parentSessionId")]
     pub parent_session_id: Option<String>,
     pub agent: String,
     #[serde(default)]
@@ -60,9 +61,9 @@ pub struct CompanionAgentTask {
     pub title: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "startedAt")]
     pub started_at: Option<u64>,
-    #[serde(default)]
+    #[serde(default, alias = "sessionColorIndex")]
     pub session_color_index: usize,
 }
 

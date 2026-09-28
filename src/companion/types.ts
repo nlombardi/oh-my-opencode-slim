@@ -7,6 +7,10 @@ export interface CompanionAgentTask {
   model?: string;
   startedAt: number;
   sessionColorIndex: number;
+  session_id?: string;
+  parent_session_id?: string;
+  started_at?: number;
+  session_color_index?: number;
 }
 
 export interface CompanionSessionEntry {
