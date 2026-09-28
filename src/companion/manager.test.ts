@@ -721,4 +721,39 @@ describe('CompanionManager', () => {
     expect(() => m.onExit()).not.toThrow();
     expect(existsSync(pidFile)).toBe(false);
   });
+  it('emits rich agent_tasks alongside legacy active_agents', () => {
+    const m = make('parent-session');
+    m.setContextResolver((id) => {
+      if (id === 'child-1') {
+        return {
+          alias: 'fixer-1',
+          parentSessionId: 'parent-session',
+          model: 'claude-3-5-sonnet',
+        };
+      }
+      return undefined;
+    });
+
+    m.onSessionStatus({
+      sessionId: 'child-1',
+      agent: 'fixer',
+      status: 'busy',
+      title: 'Fix auth token bug',
+    });
+
+    const state = readState();
+    const session = state.sessions[0];
+    expect(session.active_agents).toEqual(['fixer']);
+    expect(session.agent_tasks).toHaveLength(1);
+    expect(session.agent_tasks[0]).toMatchObject({
+      sessionId: 'child-1',
+      parentSessionId: 'parent-session',
+      agent: 'fixer',
+      alias: 'fixer-1',
+      title: 'Fix auth token bug',
+      model: 'claude-3-5-sonnet',
+    });
+    expect(session.agent_tasks[0].sessionColorIndex).toBeGreaterThanOrEqual(0);
+    expect(session.agent_tasks[0].sessionColorIndex).toBeLessThan(8);
+  });
 });

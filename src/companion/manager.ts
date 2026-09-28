@@ -11,6 +11,7 @@ import {
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { CompanionConfig } from '../config/schema';
+import type { CompanionAgentTask } from './types';
 import { log } from '../utils/logger';
 
 // Only one companion `process.on('exit')` listener should be live per process.
@@ -23,10 +24,20 @@ import { log } from '../utils/logger';
 let activeExitListener: (() => void) | null = null;
 const activeManagers = new Set<CompanionManager>();
 
+export function computeSessionColorIndex(sessionId: string): number {
+  if (typeof sessionId !== 'string') return 0;
+  let hash = 0;
+  for (let i = 0; i < sessionId.length; i++) {
+    hash = (hash * 31 + sessionId.charCodeAt(i)) >>> 0;
+  }
+  return hash % 8;
+}
+
 interface CompanionSession {
   session_id: string;
   cwd: string;
   active_agents: string[];
+  agent_tasks?: CompanionAgentTask[];
   status: string;
   pid: number;
   config?: CompanionState['config'];
@@ -240,6 +251,25 @@ export class CompanionManager {
   private status = 'idle';
   /** sessionId → agent name, for sessions currently busy. */
   private readonly busyAgentSessions = new Map<string, string>();
+  private readonly busyTasks = new Map<
+    string,
+    {
+      agent: string;
+      alias?: string;
+      parentSessionId?: string;
+      title?: string;
+      model?: string;
+      startedAt: number;
+    }
+  >();
+  private contextResolver:
+    | ((sessionId: string) => {
+        alias?: string;
+        parentSessionId?: string;
+        title?: string;
+        model?: string;
+      } | undefined)
+    | null = null;
   private readonly config?: CompanionConfig;
   private companionProcess: ChildProcess | null = null;
   private wasSpawner = false;
@@ -249,6 +279,17 @@ export class CompanionManager {
     this.id = sessionId;
     this.cwd = cwd;
     this.config = config;
+  }
+
+    setContextResolver(
+    resolver: (sessionId: string) => {
+      alias?: string;
+      parentSessionId?: string;
+      title?: string;
+      model?: string;
+    } | undefined,
+  ): void {
+    this.contextResolver = resolver;
   }
 
   onLoad(): void {
@@ -306,29 +347,39 @@ export class CompanionManager {
     sessionId?: string;
     agent?: string;
     status?: string;
+    title?: string;
+    parentSessionId?: string;
+    alias?: string;
   }): void {
     if (this.config?.enabled !== true) return;
-    const { sessionId, agent, status } = input;
+    const { sessionId, agent, status, title } = input;
     if (!sessionId || (status !== 'busy' && status !== 'idle')) return;
 
-    if (agent === 'orchestrator') {
-      // Orchestrator going idle does NOT clear specialists: with background
-      // orchestration it idles while dispatched agents are still running.
-      // Specialists are removed only by their own idle/deleted events.
+    if (agent === 'orchestrator' && !input.parentSessionId) {
       this.status = status;
       this.flush();
       return;
     }
 
     if (status === 'busy') {
-      // Accept busy sessions even without a known agent name — Herdr
-      // subagents (spawned via opencode attach) often lack the agent
-      // field, and dropping the event leaves them shown as idle.
+      const resolved = this.contextResolver?.(sessionId);
+      const parentSessionId = input.parentSessionId ?? resolved?.parentSessionId;
+      const alias = input.alias ?? resolved?.alias;
+      const sessionTitle = title ?? resolved?.title;
+      const model = resolved?.model;
+
       this.busyAgentSessions.set(sessionId, agent ?? sessionId);
+      this.busyTasks.set(sessionId, {
+        agent: agent ?? sessionId,
+        alias,
+        parentSessionId,
+        title: sessionTitle,
+        model,
+        startedAt: this.busyTasks.get(sessionId)?.startedAt ?? Date.now(),
+      });
     } else {
-      // Remove by session even when the agent name is unknown, so a
-      // finished specialist can never get stuck on screen.
       this.busyAgentSessions.delete(sessionId);
+      this.busyTasks.delete(sessionId);
     }
     this.flush();
   }
@@ -336,7 +387,9 @@ export class CompanionManager {
   onSessionDeleted(sessionId: string | undefined): void {
     if (this.config?.enabled !== true) return;
     if (!sessionId) return;
-    if (this.busyAgentSessions.delete(sessionId)) {
+    const removedAgent = this.busyAgentSessions.delete(sessionId);
+    const removedTask = this.busyTasks.delete(sessionId);
+    if (removedAgent || removedTask) {
       this.flush();
     }
   }
@@ -402,6 +455,60 @@ export class CompanionManager {
     }
   }
 
+  activeAgentTasks(): CompanionAgentTask[] {
+    const tasks: CompanionAgentTask[] = [];
+    for (const [sessionId, info] of this.busyTasks.entries()) {
+      const rootId = info.parentSessionId || sessionId;
+      tasks.push({
+        sessionId,
+        parentSessionId: info.parentSessionId,
+        agent: info.agent,
+        alias: info.alias,
+        title: info.title,
+        model: info.model,
+        startedAt: info.startedAt,
+        sessionColorIndex: computeSessionColorIndex(rootId),
+      });
+      if (tasks.length >= 9) break;
+    }
+
+    if (tasks.length > 0) return tasks;
+
+    const rootId = this.id;
+    const defaultColor = computeSessionColorIndex(rootId);
+    if (this.status === 'waiting-input') {
+      return [
+        {
+          sessionId: this.id,
+          agent: 'input',
+          title: 'Waiting for user input',
+          startedAt: Date.now(),
+          sessionColorIndex: defaultColor,
+        },
+      ];
+    }
+    if (this.status === 'busy') {
+      return [
+        {
+          sessionId: this.id,
+          agent: 'orchestrator',
+          title: 'Orchestrating tasks',
+          startedAt: Date.now(),
+          sessionColorIndex: defaultColor,
+        },
+      ];
+    }
+    return [
+      {
+        sessionId: this.id,
+        agent: 'intro',
+        title: 'Idle',
+        startedAt: Date.now(),
+        sessionColorIndex: defaultColor,
+      },
+    ];
+  }
+
   /** One entry per running agent instance (two fixers → two cells). */
   private activeAgents(): string[] {
     const agents = Array.from(this.busyAgentSessions.values());
@@ -418,6 +525,7 @@ export class CompanionManager {
         session_id: this.id,
         cwd: this.cwd,
         active_agents: this.activeAgents(),
+        agent_tasks: this.activeAgentTasks(),
         status: this.status,
         pid: process.pid,
         config: this.config

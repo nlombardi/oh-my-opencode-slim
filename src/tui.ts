@@ -1,3 +1,4 @@
+import { startCompanionActionListener } from './companion/action-listener';
 import * as path from 'node:path';
 import type {
   TuiCommand,
@@ -1529,10 +1530,18 @@ async function setup(ctx: V2TuiContext): Promise<undefined | (() => void)> {
 
   // Clickable sidebar: navigation is optional on v2 hosts (feature-detected
   // at startup); without it the sidebar renders informatively.
+  const navigator = makeRouteNavigator(ctx.ui.router, 'navigate', true);
   const interaction = createSidebarInteraction(
-    makeRouteNavigator(ctx.ui.router, 'navigate', true),
+    navigator,
     selectionGuard(ctx.renderer),
   );
+  let disposeCompanionListener: (() => void) | undefined;
+  if (navigator) {
+    disposeCompanionListener = startCompanionActionListener({
+      navigateSession: navigator,
+      showToast: (msg) => (ctx.ui as { toast?: { show?: (opts: { message: string }) => void } })?.toast?.show?.({ message: msg }),
+    });
+  }
 
   const disposeSlot = ctx.ui.slot({
     append: 'sidebar.content',
@@ -1561,6 +1570,7 @@ async function setup(ctx: V2TuiContext): Promise<undefined | (() => void)> {
 
   return () => {
     disposed = true;
+    disposeCompanionListener?.();
     disposeSlot();
     clearInterval(renderTimer);
     clearInterval(animationTimer);
@@ -1700,10 +1710,17 @@ const plugin: TuiDualContractModule = {
     });
 
     // Clickable sidebar: v1 hosts always expose api.route.navigate.
+    const navigator = makeRouteNavigator(api.route, 'navigate', false);
     const interaction = createSidebarInteraction(
-      makeRouteNavigator(api.route, 'navigate', false),
+      navigator,
       selectionGuard(api.renderer),
     );
+    if (navigator) {
+      const disposeCompanionListener = startCompanionActionListener({
+        navigateSession: navigator,
+      });
+      api.lifecycle.onDispose(() => disposeCompanionListener());
+    }
 
     api.slots.register({
       order: resolveSidebarSlotOrder(api.tuiConfig?.plugin, PLUGIN_NAME),

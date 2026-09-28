@@ -1,3 +1,15 @@
+
+pub const SESSION_COLORS: &[egui::Color32] = &[
+    egui::Color32::from_rgb(56, 189, 248),  // Sky Cyan
+    egui::Color32::from_rgb(251, 191, 36),  // Amber
+    egui::Color32::from_rgb(168, 85, 247),  // Purple
+    egui::Color32::from_rgb(52, 211, 153),  // Emerald
+    egui::Color32::from_rgb(244, 63, 94),   // Rose
+    egui::Color32::from_rgb(99, 102, 241),  // Indigo
+    egui::Color32::from_rgb(251, 146, 60),  // Orange
+    egui::Color32::from_rgb(45, 212, 191),  // Teal
+];
+
 use std::sync::mpsc::Receiver;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -11,6 +23,8 @@ use crate::gifs::{AnimationFrame, Gifs};
 use crate::niri;
 use crate::screen::primary_size;
 use crate::state::{
+    write_companion_action,
+    CompanionAgentTask,
     read_state, start_watcher, write_project_window_position, CompanionConfigState, SessionInfo,
     WindowPositionState,
 };
@@ -611,7 +625,7 @@ impl eframe::App for CompanionApp {
             )
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-                render_session(ui, ctx, &session, &agent_frames, self.size, win_w, win_h);
+                render_session(ui, ctx, &session, &agent_frames, self.size, win_w, win_h, &mut self.hovered_task);
             });
 
         render_size_picker(ctx, win_w, win_h);
@@ -659,6 +673,7 @@ fn render_session(
     current_size: f32,
     win_w: f32,
     win_h: f32,
+    hovered_task: &mut Option<CompanionAgentTask>,
 ) {
     let cwd = &session.cwd;
 
@@ -678,14 +693,70 @@ fn render_session(
     );
     ui.painter().rect_filled(surface, 0.0, egui::Color32::BLACK);
 
+    let mouse_pos = ctx.input(|i| i.pointer.hover_pos());
+    *hovered_task = None;
+
     for (i, frame) in agent_frames.iter().enumerate() {
         if let Some(&cell) = rects.get(i) {
+            let is_hovered = mouse_pos.map_or(false, |pos| cell.contains(pos));
+
             ui.painter().image(
                 frame.texture_id,
                 cell.shrink(SURFACE_INSET),
                 frame.uv,
                 egui::Color32::WHITE,
             );
+
+            if let Some(task) = session.agent_tasks.get(i) {
+                let color = SESSION_COLORS[task.session_color_index % SESSION_COLORS.len()];
+                let pip_center = cell.min + egui::vec2(7.0, 7.0);
+
+                ui.painter().circle_filled(pip_center, 4.0, egui::Color32::from_black_alpha(180));
+                ui.painter().circle_filled(pip_center, 2.5, color);
+
+                if is_hovered {
+                    *hovered_task = Some(task.clone());
+
+                    ui.painter().rect_stroke(
+                        cell.shrink(SURFACE_INSET),
+                        0.0,
+                        egui::Stroke::new(1.5, color),
+                    );
+
+                    egui::show_tooltip(ctx, egui::Id::new("companion_task_tooltip"), cell, |ui| {
+                        ui.set_max_width(220.0);
+                        ui.spacing_mut().item_spacing = egui::vec2(0.0, 3.0);
+
+                        let agent_title = task.alias.as_deref().unwrap_or(&task.agent);
+                        ui.horizontal(|ui| {
+                            ui.colored_label(color, "●");
+                            ui.strong(agent_title.to_uppercase());
+                        });
+
+                        if let Some(title) = &task.title {
+                            ui.label(egui::RichText::new(title).size(11.0).color(egui::Color32::LIGHT_GRAY));
+                        }
+
+                        let short_id = if task.session_id.len() > 8 {
+                            &task.session_id[task.session_id.len() - 8..]
+                        } else {
+                            &task.session_id
+                        };
+                        ui.label(
+                            egui::RichText::new(format!("Session: #{}", short_id))
+                                .size(9.0)
+                                .color(egui::Color32::GRAY),
+                        );
+
+                        ui.label(
+                            egui::RichText::new("Click to switch in OpenCode")
+                                .size(9.0)
+                                .italics()
+                                .color(egui::Color32::LIGHT_BLUE),
+                        );
+                    });
+                }
+            }
         }
     }
 
@@ -698,9 +769,20 @@ fn render_session(
     ui.painter()
         .rect_filled(strip, 0.0, egui::Color32::from_black_alpha(185));
 
+    let display_text = if let Some(task) = hovered_task.as_ref() {
+        let alias = task.alias.as_deref().unwrap_or(&task.agent);
+        if let Some(title) = &task.title {
+            format!("{}: {}", alias, title)
+        } else {
+            format!("{}: {}", project, alias)
+        }
+    } else {
+        project
+    };
+
     let fid = egui::FontId::proportional(font_size);
     let max_text_w = win_w - 10.0;
-    let label = fit_text(ctx, &project, &fid, max_text_w);
+    let label = fit_text(ctx, &display_text, &fid, max_text_w);
     ui.painter().text(
         strip.center(),
         egui::Align2::CENTER_CENTER,

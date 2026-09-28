@@ -1063,6 +1063,14 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
       ctx.directory,
       runtime.companion,
     );
+    companionManager.setContextResolver((sessionId) => {
+      const bgJob = backgroundJobCoordinator.get(sessionId);
+      return {
+        alias: bgJob?.alias,
+        parentSessionId: bgJob?.parentSessionID,
+        model: sessionMetadata.getModel(sessionId),
+      };
+    });
     taskCancelTools = createCancelTaskTool({
       input: ctx,
       backgroundJobBoard: backgroundJobCoordinator,

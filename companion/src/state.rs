@@ -55,6 +55,8 @@ pub struct SessionInfo {
     #[serde(default)]
     pub active_agents: Vec<String>,
     #[serde(default)]
+    pub agent_tasks: Vec<CompanionAgentTask>,
+    #[serde(default)]
     pub active_agent: Option<String>,
     #[serde(default)]
     pub status: String,
@@ -183,4 +185,50 @@ fn poll_loop(path: PathBuf, tx: Sender<()>) {
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompanionAction {
+    pub action: String,
+    pub session_id: String,
+    pub timestamp: u64,
+}
+
+pub fn action_file_path() -> PathBuf {
+    let base = std::env::var("XDG_DATA_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".local")
+                .join("share")
+        });
+    base.join("opencode")
+        .join("storage")
+        .join("oh-my-opencode-slim")
+        .join("companion-action.json")
+}
+
+pub fn write_companion_action(session_id: &str) -> std::io::Result<()> {
+    let path = action_file_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    let action = CompanionAction {
+        action: "switch_session".to_string(),
+        session_id: session_id.to_string(),
+        timestamp: now,
+    };
+    let json = serde_json::to_string(&action).map_err(std::io::Error::other)?;
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(tmp, path)?;
+    Ok(())
 }
