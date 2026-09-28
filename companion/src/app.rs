@@ -319,6 +319,9 @@ pub struct CompanionApp {
     project_keys: std::collections::BTreeMap<String, String>,
     drag_project_key: Option<String>,
     niri_generation: Arc<AtomicU64>,
+    press_pos: Option<egui::Pos2>,
+    is_dragging: bool,
+    hovered_task: Option<CompanionAgentTask>,
 }
 
 impl CompanionApp {
@@ -379,6 +382,9 @@ impl CompanionApp {
             project_keys: std::collections::BTreeMap::new(),
             drag_project_key: None,
             niri_generation: Arc::new(AtomicU64::new(0)),
+            press_pos: None,
+            is_dragging: false,
+            hovered_task: None,
         }
     }
 
@@ -590,21 +596,57 @@ impl eframe::App for CompanionApp {
             self.spawn_niri_fallback([win_w, win_h], saved_position);
         }
 
-        handle_drag_start(ctx, menu_open, &project_key, &mut self.drag_project_key);
-        if ctx.input(|i| i.pointer.primary_released()) {
-            if let Some(project_key) = self.drag_project_key.take() {
-                if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
-                    let position = WindowPositionState {
-                        x: rect.min.x,
-                        y: rect.min.y,
-                    };
-                    if write_project_window_position(&self.state_path, &project_key, position)
-                        .is_ok()
-                    {
-                        self.window_positions.insert(project_key, position);
-                        self.applied_geometry = None;
+        if !menu_open {
+            if ctx.input(|i| i.pointer.primary_pressed()) {
+                if let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) {
+                    self.press_pos = Some(pos);
+                    self.is_dragging = false;
+                }
+            }
+            if let Some(press_pos) = self.press_pos {
+                if let Some(cur) = ctx.input(|i| i.pointer.interact_pos()) {
+                    if !self.is_dragging && cur.distance(press_pos) > 4.0 {
+                        self.is_dragging = true;
+                        self.drag_project_key = Some(project_key.to_owned());
+                        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                     }
                 }
+            }
+        }
+
+        if ctx.input(|i| i.pointer.primary_released()) {
+            if self.is_dragging {
+                if let Some(project_key) = self.drag_project_key.take() {
+                    if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
+                        let position = WindowPositionState {
+                            x: rect.min.x,
+                            y: rect.min.y,
+                        };
+                        if write_project_window_position(&self.state_path, &project_key, position)
+                            .is_ok()
+                        {
+                            self.window_positions.insert(project_key, position);
+                            self.applied_geometry = None;
+                        }
+                    }
+                }
+                self.is_dragging = false;
+                self.press_pos = None;
+            } else if let Some(press_pos) = self.press_pos.take() {
+                if let Some(release_pos) = ctx.input(|i| i.pointer.interact_pos()) {
+                    if press_pos.distance(release_pos) <= 4.0 {
+                        let rects = cell_rects(n, cols, rows, self.size);
+                        for (idx, rect) in rects.iter().enumerate() {
+                            if rect.contains(release_pos) {
+                                if let Some(task) = session.agent_tasks.get(idx) {
+                                    let _ = write_companion_action(&task.session_id);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                self.drag_project_key = None;
             }
         }
 
