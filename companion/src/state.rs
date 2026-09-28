@@ -49,6 +49,24 @@ pub struct WindowPositionState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompanionAgentTask {
+    pub session_id: String,
+    #[serde(default)]
+    pub parent_session_id: Option<String>,
+    pub agent: String,
+    #[serde(default)]
+    pub alias: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<u64>,
+    #[serde(default)]
+    pub session_color_index: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub session_id: String,
     pub cwd: String,

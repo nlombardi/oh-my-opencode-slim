@@ -762,10 +762,10 @@ fn render_session(
                     ui.painter().rect_stroke(
                         cell.shrink(SURFACE_INSET),
                         0.0,
-                        egui::Stroke::new(1.5, color),
+                        egui::Stroke::new(1.5_f32, color),
                     );
 
-                    egui::show_tooltip(ctx, egui::Id::new("companion_task_tooltip"), cell, |ui| {
+                    egui::show_tooltip_at_pointer(ctx, egui::Id::new("companion_task_tooltip"), |ui| {
                         ui.set_max_width(220.0);
                         ui.spacing_mut().item_spacing = egui::vec2(0.0, 3.0);
 
@@ -860,7 +860,7 @@ fn render_size_picker(ctx: &egui::Context, win_w: f32, win_h: f32) {
             .show(ctx, |ui| {
                 egui::Frame::none()
                     .fill(egui::Color32::from_rgb(20, 20, 22))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(35)))
+                    .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(35)))
                     .inner_margin(egui::Margin::symmetric(4.0, 4.0))
                     .show(ui, |ui| {
                         ui.set_min_width(MENU_W - MENU_PAD * 2.0);
