@@ -11,8 +11,8 @@ import {
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { CompanionConfig } from '../config/schema';
-import type { CompanionAgentTask } from './types';
 import { log } from '../utils/logger';
+import type { CompanionAgentTask } from './types';
 
 // Only one companion `process.on('exit')` listener should be live per process.
 // The plugin function can re-run (config.update() → Instance.dispose()),
@@ -35,6 +35,9 @@ export function computeSessionColorIndex(sessionId: string): number {
 
 interface CompanionSession {
   session_id: string;
+  root_session_id?: string;
+  session_name?: string;
+  title?: string;
   cwd: string;
   active_agents: string[];
   agent_tasks?: CompanionAgentTask[];
@@ -249,6 +252,9 @@ export class CompanionManager {
   private readonly id: string;
   private readonly cwd: string;
   private status = 'idle';
+  private rootSessionId: string | null = null;
+  private rootSessionTitle: string | null = null;
+  private rootSessionAgent = 'orchestrator';
   /** sessionId → agent name, for sessions currently busy. */
   private readonly busyAgentSessions = new Map<string, string>();
   private readonly busyTasks = new Map<
@@ -263,12 +269,14 @@ export class CompanionManager {
     }
   >();
   private contextResolver:
-    | ((sessionId: string) => {
-        alias?: string;
-        parentSessionId?: string;
-        title?: string;
-        model?: string;
-      } | undefined)
+    | ((sessionId: string) =>
+        | {
+            alias?: string;
+            parentSessionId?: string;
+            title?: string;
+            model?: string;
+          }
+        | undefined)
     | null = null;
   private readonly config?: CompanionConfig;
   private companionProcess: ChildProcess | null = null;
@@ -281,15 +289,32 @@ export class CompanionManager {
     this.config = config;
   }
 
-    setContextResolver(
-    resolver: (sessionId: string) => {
-      alias?: string;
-      parentSessionId?: string;
-      title?: string;
-      model?: string;
-    } | undefined,
+  setContextResolver(
+    resolver: (sessionId: string) =>
+      | {
+          alias?: string;
+          parentSessionId?: string;
+          title?: string;
+          model?: string;
+        }
+      | undefined,
   ): void {
     this.contextResolver = resolver;
+  }
+
+  setSessionTitle(sessionId: string, title: string): void {
+    if (typeof title === 'string' && title.trim()) {
+      const cleanTitle = title.trim();
+      if (!this.rootSessionId || this.rootSessionId === sessionId) {
+        this.rootSessionId = sessionId;
+        this.rootSessionTitle = cleanTitle;
+      }
+      const existingTask = this.busyTasks.get(sessionId);
+      if (existingTask) {
+        existingTask.title = cleanTitle;
+      }
+      this.flush();
+    }
   }
 
   onLoad(): void {
@@ -355,19 +380,25 @@ export class CompanionManager {
     const { sessionId, agent, status, title } = input;
     if (!sessionId || (status !== 'busy' && status !== 'idle')) return;
 
-    if (agent === 'orchestrator' && !input.parentSessionId) {
+    const resolved = this.contextResolver?.(sessionId);
+    const parentSessionId = input.parentSessionId ?? resolved?.parentSessionId;
+    const alias = input.alias ?? resolved?.alias;
+    const sessionTitle = title ?? resolved?.title;
+    const model = resolved?.model;
+
+    if (!parentSessionId) {
+      this.rootSessionId = sessionId;
+      if (sessionTitle) this.rootSessionTitle = sessionTitle;
+      if (agent) this.rootSessionAgent = agent;
+    }
+
+    if (agent === 'orchestrator' && !parentSessionId) {
       this.status = status;
       this.flush();
       return;
     }
 
     if (status === 'busy') {
-      const resolved = this.contextResolver?.(sessionId);
-      const parentSessionId = input.parentSessionId ?? resolved?.parentSessionId;
-      const alias = input.alias ?? resolved?.alias;
-      const sessionTitle = title ?? resolved?.title;
-      const model = resolved?.model;
-
       this.busyAgentSessions.set(sessionId, agent ?? sessionId);
       this.busyTasks.set(sessionId, {
         agent: agent ?? sessionId,
@@ -457,14 +488,48 @@ export class CompanionManager {
 
   activeAgentTasks(): CompanionAgentTask[] {
     const tasks: CompanionAgentTask[] = [];
+    const rootId = this.rootSessionId || this.id;
+    const defaultColor = computeSessionColorIndex(rootId);
+    const now = Date.now();
+
+    const topAgentTitle =
+      this.rootSessionTitle ||
+      (this.rootSessionId
+        ? `Session #${this.rootSessionId.slice(-6)}`
+        : 'Session 1');
+    const topAgentName = this.rootSessionAgent || 'orchestrator';
+
+    if (this.busyTasks.size === 0) {
+      const topAgentType =
+        this.status === 'waiting-input'
+          ? 'input'
+          : this.status === 'busy'
+            ? topAgentName
+            : 'intro';
+
+      tasks.push({
+        sessionId: rootId,
+        session_id: rootId,
+        agent: topAgentType,
+        alias: 'Main Session',
+        title: topAgentTitle,
+        startedAt: now,
+        started_at: now,
+        sessionColorIndex: defaultColor,
+        session_color_index: defaultColor,
+      });
+      return tasks;
+    }
+
     for (const [sessionId, info] of this.busyTasks.entries()) {
-      const rootId = info.parentSessionId || sessionId;
-      const colorIndex = computeSessionColorIndex(rootId);
+      if (sessionId === rootId) continue;
+      const subRootId = info.parentSessionId || rootId;
+      const colorIndex = computeSessionColorIndex(subRootId);
       tasks.push({
         sessionId,
-        parentSessionId: info.parentSessionId,
+        parentSessionId: info.parentSessionId ?? rootId,
         session_id: sessionId,
-        parent_session_id: info.parentSessionId,
+        parent_session_id: info.parentSessionId ?? rootId,
         agent: info.agent,
         alias: info.alias,
         title: info.title,
@@ -477,51 +542,7 @@ export class CompanionManager {
       if (tasks.length >= 9) break;
     }
 
-    if (tasks.length > 0) return tasks;
-
-    const rootId = this.id;
-    const defaultColor = computeSessionColorIndex(rootId);
-    const now = Date.now();
-    if (this.status === 'waiting-input') {
-      return [
-        {
-          sessionId: this.id,
-          session_id: this.id,
-          agent: 'input',
-          title: 'Waiting for user input',
-          startedAt: now,
-          started_at: now,
-          sessionColorIndex: defaultColor,
-          session_color_index: defaultColor,
-        },
-      ];
-    }
-    if (this.status === 'busy') {
-      return [
-        {
-          sessionId: this.id,
-          session_id: this.id,
-          agent: 'orchestrator',
-          title: 'Orchestrating tasks',
-          startedAt: now,
-          started_at: now,
-          sessionColorIndex: defaultColor,
-          session_color_index: defaultColor,
-        },
-      ];
-    }
-    return [
-      {
-        sessionId: this.id,
-        session_id: this.id,
-        agent: 'intro',
-        title: 'Idle',
-        startedAt: now,
-        started_at: now,
-        sessionColorIndex: defaultColor,
-        session_color_index: defaultColor,
-      },
-    ];
+    return tasks;
   }
 
   /** One entry per running agent instance (two fixers → two cells). */
@@ -538,6 +559,13 @@ export class CompanionManager {
     try {
       const entry: CompanionSession = {
         session_id: this.id,
+        root_session_id: this.rootSessionId || this.id,
+        session_name:
+          this.rootSessionTitle ||
+          (this.rootSessionId
+            ? `Session #${this.rootSessionId.slice(-6)}`
+            : 'Session 1'),
+        title: this.rootSessionTitle ?? undefined,
         cwd: this.cwd,
         active_agents: this.activeAgents(),
         agent_tasks: this.activeAgentTasks(),

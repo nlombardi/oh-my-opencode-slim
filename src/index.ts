@@ -1068,6 +1068,7 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
       return {
         alias: bgJob?.alias,
         parentSessionId: bgJob?.parentSessionID,
+        title: sessionMetadata.getTitle(sessionId) || bgJob?.description,
         model: sessionMetadata.getModel(sessionId),
       };
     });
@@ -1766,6 +1767,30 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
         companionManager.onInputResolved();
       }
 
+      if (
+        event.type === 'session.created' ||
+        event.type === 'session.updated'
+      ) {
+        const props = (input.event.properties ??
+          (input.event as Record<string, unknown>).data) as
+          | {
+              sessionID?: string;
+              title?: string;
+              info?: { id?: string; title?: string };
+            }
+          | undefined;
+        const sessionID = props?.sessionID ?? props?.info?.id;
+        const sessionTitle = props?.title ?? props?.info?.title;
+        if (
+          sessionID &&
+          typeof sessionTitle === 'string' &&
+          sessionTitle.trim()
+        ) {
+          sessionMetadata.setTitle(sessionID, sessionTitle);
+          companionManager.setSessionTitle(sessionID, sessionTitle);
+        }
+      }
+
       if (input.event.type === 'session.status') {
         const props = input.event.properties as
           | { sessionID?: string; status?: { type?: string } | string }
@@ -1786,6 +1811,7 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
           sessionId: sessionID,
           agent: sessionID ? sessionMetadata.getAgent(sessionID) : undefined,
           status: companionStatus,
+          title: sessionID ? sessionMetadata.getTitle(sessionID) : undefined,
         });
       }
 
@@ -2009,6 +2035,7 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
           sessionId: input.sessionID,
           agent,
           status: 'busy',
+          title: sessionMetadata.getTitle(input.sessionID),
         });
       }
 

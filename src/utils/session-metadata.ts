@@ -3,6 +3,7 @@ type SessionMetadataEviction = (sessionID: string) => void;
 export class SessionMetadataStore {
   readonly #agents = new Map<string, string>();
   readonly #models = new Map<string, string>();
+  readonly #titles = new Map<string, string>();
   readonly #directories = new Map<string, string>();
   readonly #insertionOrder = new Map<string, undefined>();
   readonly #activeOrchestratorSessionIDs = new Set<string>();
@@ -32,6 +33,17 @@ export class SessionMetadataStore {
   setModel(sessionID: string, model: string): void {
     this.#models.set(sessionID, model);
     this.#track(sessionID);
+  }
+
+  getTitle(sessionID: string): string | undefined {
+    return this.#titles.get(sessionID);
+  }
+
+  setTitle(sessionID: string, title: string): void {
+    if (typeof title === 'string' && title.trim()) {
+      this.#titles.set(sessionID, title.trim());
+      this.#track(sessionID);
+    }
   }
 
   getDirectory(sessionID: string): string | undefined {
@@ -77,6 +89,7 @@ export class SessionMetadataStore {
   delete(sessionID: string): void {
     this.#agents.delete(sessionID);
     this.#models.delete(sessionID);
+    this.#titles.delete(sessionID);
     this.#directories.delete(sessionID);
     this.#insertionOrder.delete(sessionID);
     this.#activeOrchestratorSessionIDs.delete(sessionID);
@@ -127,6 +140,7 @@ export class SessionMetadataStore {
       this.#insertionOrder.delete(evictableSessionID);
       this.#agents.delete(evictableSessionID);
       this.#models.delete(evictableSessionID);
+      this.#titles.delete(evictableSessionID);
       this.#directories.delete(evictableSessionID);
       this.#taskManagedSessionIDs.delete(evictableSessionID);
       this.#activeOrchestratorSessionIDs.delete(evictableSessionID);

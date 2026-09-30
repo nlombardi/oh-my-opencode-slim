@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -532,9 +533,17 @@ describe('CompanionManager', () => {
   });
 
   it('stores the spawned child PID in the PID file', () => {
-    const bin = path.join(TEST_DIR, 'fake-companion');
-    writeFileSync(bin, '#!/bin/sh\nexec sleep 30\n');
-    chmodSync(bin, 0o755);
+    const isWindows = process.platform === 'win32';
+    const bin = path.join(
+      TEST_DIR,
+      isWindows ? 'fake-companion.exe' : 'fake-companion',
+    );
+    if (isWindows) {
+      copyFileSync(process.execPath, bin);
+    } else {
+      writeFileSync(bin, '#!/bin/sh\nexec sleep 30\n');
+      chmodSync(bin, 0o755);
+    }
 
     const m = make('test-child-pid', '/path', {
       enabled: true,
@@ -550,6 +559,9 @@ describe('CompanionManager', () => {
     expect(pid).toBe(
       (m as unknown as { spawnedCompanionPid: number }).spawnedCompanionPid,
     );
+    try {
+      process.kill(pid);
+    } catch {}
   });
 
   it('spawns when no PID file exists', () => {

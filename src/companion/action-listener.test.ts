@@ -58,4 +58,30 @@ describe('startCompanionActionListener', () => {
     expect(toasts[0]).toContain('#c12345');
     expect(existsSync(file)).toBe(false);
   });
+
+  it('prioritizes root_session_id when navigating child sessions', async () => {
+    const navigated: string[] = [];
+
+    const stop = startCompanionActionListener({
+      navigateSession: (id) => navigated.push(id),
+      intervalMs: 20,
+    });
+
+    const file = actionFilePath();
+    mkdirSync(path.dirname(file), { recursive: true });
+
+    const action = {
+      action: 'switch_session',
+      sessionId: 'ses_child_task',
+      root_session_id: 'ses_root_main',
+      timestamp: Date.now() + 10,
+    };
+    writeFileSync(file, JSON.stringify(action), 'utf8');
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    stop();
+
+    expect(navigated).toEqual(['ses_root_main']);
+    expect(existsSync(file)).toBe(false);
+  });
 });

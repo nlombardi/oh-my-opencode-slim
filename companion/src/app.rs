@@ -10,6 +10,58 @@ pub const SESSION_COLORS: &[egui::Color32] = &[
     egui::Color32::from_rgb(45, 212, 191),  // Teal
 ];
 
+pub fn compute_session_color_index(session_id: &str) -> usize {
+    let mut hash: u32 = 0;
+    for byte in session_id.bytes() {
+        hash = hash.wrapping_mul(31).wrapping_add(byte as u32);
+    }
+    (hash % 8) as usize
+}
+
+fn focus_vscode(cwd: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ws = New-Object -ComObject WScript.Shell; if (!($ws.AppActivate('Visual Studio Code'))) { $ws.AppActivate('Code') }",
+            ])
+            .spawn();
+
+        if !cwd.is_empty() {
+            let _ = std::process::Command::new("cmd")
+                .args(["/C", "code", "-r", cwd])
+                .spawn();
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", "tell application \"Visual Studio Code\" to activate"])
+            .spawn();
+        if !cwd.is_empty() {
+            let _ = std::process::Command::new("code")
+                .args(["-r", cwd])
+                .spawn();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("wmctrl")
+            .args(["-x", "-a", "code.Code"])
+            .spawn();
+        if !cwd.is_empty() {
+            let _ = std::process::Command::new("code")
+                .args(["-r", cwd])
+                .spawn();
+        }
+    }
+}
+
 use std::sync::mpsc::Receiver;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -158,8 +210,15 @@ fn apply_config(
     }
 }
 
+fn session_header_height(cell_size: f32) -> f32 {
+    (cell_size * 0.22).clamp(24.0, 32.0)
+}
+
 fn window_size(cell: f32, cols: usize, rows: usize) -> [f32; 2] {
-    [cell * cols as f32, cell * rows as f32]
+    let header_h = session_header_height(cell);
+    let w = (cell * cols as f32).max(160.0);
+    let h = cell * rows as f32 + header_h;
+    [w, h]
 }
 
 fn handle_drag_start(
@@ -231,7 +290,7 @@ fn canonical_project_key(cwd: &str) -> String {
         .unwrap_or_else(|| cwd.to_string())
 }
 
-fn cell_rects(agents: usize, cols: usize, rows: usize, cell: f32) -> Vec<egui::Rect> {
+fn cell_rects(agents: usize, cols: usize, rows: usize, cell: f32, y_offset: f32) -> Vec<egui::Rect> {
     let mut rects = Vec::with_capacity(agents);
     let full_rows = agents / cols;
     let remainder = agents % cols;
@@ -239,7 +298,7 @@ fn cell_rects(agents: usize, cols: usize, rows: usize, cell: f32) -> Vec<egui::R
     for row in 0..full_rows {
         for col in 0..cols {
             rects.push(egui::Rect::from_min_size(
-                egui::pos2(col as f32 * cell, row as f32 * cell),
+                egui::pos2(col as f32 * cell, y_offset + row as f32 * cell),
                 egui::vec2(cell, cell),
             ));
         }
@@ -249,7 +308,7 @@ fn cell_rects(agents: usize, cols: usize, rows: usize, cell: f32) -> Vec<egui::R
         let x_offset = (cols - remainder) as f32 * cell / 2.0;
         for col in 0..remainder {
             rects.push(egui::Rect::from_min_size(
-                egui::pos2(x_offset + col as f32 * cell, full_rows as f32 * cell),
+                egui::pos2(x_offset + col as f32 * cell, y_offset + full_rows as f32 * cell),
                 egui::vec2(cell, cell),
             ));
         }
@@ -517,34 +576,27 @@ impl eframe::App for CompanionApp {
         let project_key = self.project_key_for(&session.cwd);
         let saved_position = self.window_positions.get(&project_key).copied();
         let time_seconds = ctx.input(|input| input.time);
-        let agent_frames: Vec<AnimationFrame> = if session.active_agents.is_empty() {
-            self.gifs
-                .frame(
+        let agent_names: Vec<String> = if !session.agent_tasks.is_empty() {
+            session.agent_tasks.iter().map(|t| t.agent.clone()).collect()
+        } else if !session.active_agents.is_empty() {
+            session.active_agents.clone()
+        } else {
+            vec!["intro".to_string()]
+        };
+
+        let agent_frames: Vec<AnimationFrame> = agent_names
+            .iter()
+            .filter_map(|agent| {
+                self.gifs.frame(
                     ctx,
-                    "intro",
+                    agent,
                     &self.gif_pack,
                     self.speed,
                     &self.loop_style,
                     time_seconds,
                 )
-                .into_iter()
-                .collect()
-        } else {
-            session
-                .active_agents
-                .iter()
-                .filter_map(|agent| {
-                    self.gifs.frame(
-                        ctx,
-                        agent,
-                        &self.gif_pack,
-                        self.speed,
-                        &self.loop_style,
-                        time_seconds,
-                    )
-                })
-                .collect()
-        };
+            })
+            .collect();
         let n = agent_frames.len().max(1);
         let (cols, rows) = grid_dims(n);
         let [win_w, win_h] = window_size(self.size, cols, rows);
@@ -635,15 +687,28 @@ impl eframe::App for CompanionApp {
             } else if let Some(press_pos) = self.press_pos.take() {
                 if let Some(release_pos) = ctx.input(|i| i.pointer.interact_pos()) {
                     if press_pos.distance(release_pos) <= 4.0 {
-                        let rects = cell_rects(n, cols, rows, self.size);
-                        for (idx, rect) in rects.iter().enumerate() {
-                            if rect.contains(release_pos) {
-                                if let Some(task) = session.agent_tasks.get(idx) {
-                                    let _ = write_companion_action(&task.session_id);
-                                } else if !session.session_id.is_empty() {
-                                    let _ = write_companion_action(&session.session_id);
+                        let header_h = session_header_height(self.size);
+                        let header_rect = egui::Rect::from_min_size(
+                            egui::pos2(0.0, 0.0),
+                            egui::vec2(win_w, header_h),
+                        );
+                        let root_id = session.root_session_id.as_deref().unwrap_or(&session.session_id);
+                        if header_rect.contains(release_pos) {
+                            let _ = write_companion_action(root_id, Some(root_id), Some(&session.cwd));
+                            focus_vscode(&session.cwd);
+                        } else {
+                            let rects = cell_rects(n, cols, rows, self.size, header_h);
+                            for (idx, rect) in rects.iter().enumerate() {
+                                if rect.contains(release_pos) {
+                                    if let Some(task) = session.agent_tasks.get(idx) {
+                                        let root_id_opt = task.parent_session_id.as_deref().or(session.root_session_id.as_deref());
+                                        let _ = write_companion_action(&task.session_id, root_id_opt, Some(&session.cwd));
+                                    } else if !session.session_id.is_empty() {
+                                        let _ = write_companion_action(&session.session_id, Some(root_id), Some(&session.cwd));
+                                    }
+                                    focus_vscode(&session.cwd);
+                                    break;
                                 }
-                                break;
                             }
                         }
                     }
@@ -727,12 +792,109 @@ fn render_session(
         .unwrap_or("unknown")
         .to_string();
 
+    let header_h = session_header_height(current_size);
+    let header_rect = egui::Rect::from_min_size(
+        egui::pos2(0.0, 0.0),
+        egui::vec2(win_w, header_h),
+    );
+
+    let root_id = session.root_session_id.as_deref().unwrap_or(&session.session_id);
+    let session_color_idx = compute_session_color_index(root_id);
+    let session_color = SESSION_COLORS[session_color_idx % SESSION_COLORS.len()];
+
+    let session_name = session
+        .session_name
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            let short_id = if root_id.len() > 6 {
+                &root_id[root_id.len() - 6..]
+            } else {
+                root_id
+            };
+            format!("Session #{}", short_id)
+        });
+
+    let mouse_pos = ctx.input(|i| i.pointer.hover_pos());
+    let is_header_hovered = mouse_pos.map_or(false, |pos| header_rect.contains(pos));
+
+    let header_bg = if is_header_hovered {
+        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+        egui::Color32::from_rgb(32, 35, 46)
+    } else {
+        egui::Color32::from_rgb(16, 17, 22)
+    };
+
+    ui.painter().rect_filled(header_rect, 0.0, header_bg);
+    ui.painter().line_segment(
+        [egui::pos2(0.0, header_h), egui::pos2(win_w, header_h)],
+        egui::Stroke::new(1.0, egui::Color32::from_white_alpha(35)),
+    );
+
+    // Colored session circle pip
+    let pip_center = egui::pos2(12.0, header_h / 2.0);
+    ui.painter().circle_filled(pip_center, 4.5, egui::Color32::from_black_alpha(180));
+    ui.painter().circle_filled(pip_center, 3.0, session_color);
+
+    // Session title text
+    let header_font_size = (header_h * 0.44).clamp(10.0, 13.0);
+    let header_fid = egui::FontId::proportional(header_font_size);
+    let max_header_w = (win_w - 28.0).max(10.0);
+    let header_label = fit_text(ctx, &session_name, &header_fid, max_header_w);
+    ui.painter().text(
+        egui::pos2(22.0, header_h / 2.0),
+        egui::Align2::LEFT_CENTER,
+        &header_label,
+        header_fid,
+        if is_header_hovered {
+            egui::Color32::WHITE
+        } else {
+            egui::Color32::from_rgb(220, 225, 235)
+        },
+    );
+
+    if is_header_hovered {
+        let layer_id = ui.layer_id();
+        egui::show_tooltip_at_pointer(ctx, layer_id, egui::Id::new("companion_session_header_tooltip"), |ui: &mut egui::Ui| {
+            ui.set_max_width(240.0);
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 3.0);
+
+            ui.horizontal(|ui| {
+                ui.colored_label(session_color, "●");
+                ui.strong(&session_name);
+            });
+
+            let short_id = if root_id.len() > 8 {
+                &root_id[root_id.len() - 8..]
+            } else {
+                root_id
+            };
+            ui.label(
+                egui::RichText::new(format!("Session: #{}", short_id))
+                    .size(9.0)
+                    .color(egui::Color32::GRAY),
+            );
+            ui.label(
+                egui::RichText::new(format!("Project: {}", project))
+                    .size(9.0)
+                    .color(egui::Color32::GRAY),
+            );
+            ui.label(
+                egui::RichText::new("Click to open session in VS Code")
+                    .size(9.0)
+                    .italics()
+                    .color(egui::Color32::LIGHT_BLUE),
+            );
+        });
+    }
+
     let n = agent_frames.len().max(1);
     let (cols, rows) = grid_dims(n);
-    let rects = cell_rects(n, cols, rows, current_size);
+    let rects = cell_rects(n, cols, rows, current_size, header_h);
 
     let surface = egui::Rect::from_min_max(
-        egui::pos2(SURFACE_INSET, SURFACE_INSET),
+        egui::pos2(SURFACE_INSET, header_h + SURFACE_INSET),
         egui::pos2(win_w - SURFACE_INSET, win_h - SURFACE_INSET),
     );
     ui.painter().rect_filled(surface, 0.0, egui::Color32::BLACK);
@@ -760,6 +922,7 @@ fn render_session(
 
                 if is_hovered {
                     *hovered_task = Some(task.clone());
+                    ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
 
                     ui.painter().rect_stroke(
                         cell.shrink(SURFACE_INSET),
@@ -776,6 +939,9 @@ fn render_session(
                         ui.horizontal(|ui| {
                             ui.colored_label(color, "●");
                             ui.strong(agent_title.to_uppercase());
+                            if i == 0 && session.agent_tasks.len() > 1 {
+                                ui.colored_label(egui::Color32::from_rgb(130, 210, 150), "[TOP AGENT]");
+                            }
                         });
 
                         if let Some(title) = &task.title {
@@ -794,7 +960,7 @@ fn render_session(
                         );
 
                         ui.label(
-                            egui::RichText::new("Click to switch in OpenCode")
+                            egui::RichText::new("Click to switch in OpenCode / VS Code")
                                 .size(9.0)
                                 .italics()
                                 .color(egui::Color32::LIGHT_BLUE),

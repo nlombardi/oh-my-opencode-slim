@@ -15,6 +15,9 @@ export interface CompanionAgentTask {
 
 export interface CompanionSessionEntry {
   session_id: string;
+  root_session_id?: string;
+  session_name?: string;
+  title?: string;
   cwd: string;
   active_agents: string[]; // Preserved for backwards compatibility
   agent_tasks?: CompanionAgentTask[]; // Rich structured metadata
@@ -26,5 +29,8 @@ export interface CompanionSessionEntry {
 export interface CompanionAction {
   action: 'switch_session';
   sessionId: string;
+  session_id?: string;
+  root_session_id?: string;
+  cwd?: string;
   timestamp: number;
 }

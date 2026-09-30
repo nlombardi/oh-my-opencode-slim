@@ -70,6 +70,10 @@ pub struct CompanionAgentTask {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub session_id: String,
+    #[serde(default, alias = "rootSessionId")]
+    pub root_session_id: Option<String>,
+    #[serde(default, alias = "sessionName", alias = "title")]
+    pub session_name: Option<String>,
     pub cwd: String,
     #[serde(default)]
     pub active_agents: Vec<String>,
@@ -210,6 +214,10 @@ fn poll_loop(path: PathBuf, tx: Sender<()>) {
 pub struct CompanionAction {
     pub action: String,
     pub session_id: String,
+    #[serde(default, alias = "rootSessionId")]
+    pub root_session_id: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
     pub timestamp: u64,
 }
 
@@ -230,7 +238,11 @@ pub fn action_file_path() -> PathBuf {
         .join("companion-action.json")
 }
 
-pub fn write_companion_action(session_id: &str) -> std::io::Result<()> {
+pub fn write_companion_action(
+    session_id: &str,
+    root_session_id: Option<&str>,
+    cwd: Option<&str>,
+) -> std::io::Result<()> {
     let path = action_file_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -243,6 +255,8 @@ pub fn write_companion_action(session_id: &str) -> std::io::Result<()> {
     let action = CompanionAction {
         action: "switch_session".to_string(),
         session_id: session_id.to_string(),
+        root_session_id: root_session_id.map(str::to_string),
+        cwd: cwd.map(str::to_string),
         timestamp: now,
     };
     let json = serde_json::to_string(&action).map_err(std::io::Error::other)?;
